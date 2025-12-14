@@ -9,7 +9,8 @@ export type TranscribeResult = {
   vtt: string;
 };
 
-const API_BASE = "http://127.0.0.1:8001";
+const API_BASE =
+  (import.meta as any).env?.VITE_TRANSCRIBE_API_BASE ?? "http://127.0.0.1:8001";
 
 export async function transcribeFile(file: File): Promise<TranscribeResult> {
   const form = new FormData();

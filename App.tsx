@@ -7,6 +7,7 @@ import { decodeAudioFromFile, sliceAudioBuffer, audioBufferToWav, blobToBase64 }
 import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
+import Transcriber from './components/Transcriber';
 
 const PRESET_PROMPTS = [
   {
@@ -543,6 +544,11 @@ const App: React.FC = () => {
                 )}
             </div>
         </div>
+
+        {/* Subtitle Transcriber */}
+        <section id="transcriber" className="w-full scroll-mt-24">
+          <Transcriber file={videoState.file} />
+        </section>
 
       </main>
     </div>
