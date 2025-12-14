@@ -1,13 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { VideoPlayer } from './components/VideoPlayer';
 import { NoteCard } from './components/NoteCard';
-import { Note, VideoState } from './types';
+import { SubtitlePanel } from './components/SubtitlePanel';
+import { Note, VideoState, SubtitleState } from './types';
 import { analyzeAudio } from './services/geminiService';
 import { decodeAudioFromFile, sliceAudioBuffer, audioBufferToWav, blobToBase64 } from './utils/audioUtils';
 import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
-import Transcriber from './components/Transcriber';
 
 const PRESET_PROMPTS = [
   {
@@ -57,6 +57,12 @@ const App: React.FC = () => {
   const [currentPrompt, setCurrentPrompt] = useState(PRESET_PROMPTS[0].value);
   const [showPromptSettings, setShowPromptSettings] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [subtitleState, setSubtitleState] = useState<SubtitleState>({
+    segments: [],
+    isRecognizing: false,
+    recognitionProgress: '',
+    vttUrl: null,
+  });
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const fullAudioBufferRef = useRef<AudioBuffer | null>(null);
@@ -91,7 +97,13 @@ const App: React.FC = () => {
             volume: 1,
         });
         fullAudioBufferRef.current = null;
-        setNotes([]); 
+        setNotes([]);
+        setSubtitleState({
+          segments: [],
+          isRecognizing: false,
+          recognitionProgress: '',
+          vttUrl: null,
+        });
     }
   };
 
@@ -150,6 +162,12 @@ const App: React.FC = () => {
       videoRef.current.currentTime = timestamp;
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
+  };
+
+  const handleLoadSubtitle = (vttUrl: string) => {
+    // The subtitle is already loaded into state via SubtitlePanel
+    // This handler is called to inform parent that subtitle is ready
+    console.log('Subtitle loaded:', vttUrl);
   };
 
   const handleUpdateContent = (id: string, newContent: string) => {
@@ -376,105 +394,118 @@ const App: React.FC = () => {
       {/* Main Content */}
       <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-8 flex flex-col gap-8">
         
-        {/* Top Section: Player & Prompt Settings */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Top Section: Video Player & Subtitle Panel */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Video Player Area */}
-          <div className="lg:col-span-8 flex flex-col gap-4">
+          <div className="lg:col-span-2 flex flex-col gap-4">
             <div className="rounded-xl overflow-hidden shadow-2xl bg-black ring-1 ring-slate-800">
                 <VideoPlayer 
                     onCapture={handleCapture}
                     videoState={videoState}
                     setVideoState={setVideoState}
                     videoRef={videoRef}
+                    subtitleUrl={subtitleState.vttUrl}
                 />
             </div>
           </div>
 
-          {/* Sidebar: Settings & Prompt */}
-          <div className="lg:col-span-4 flex flex-col h-full min-h-[400px]">
-            <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-sm flex flex-col h-full">
-               {/* Tab/Header */}
-               <div className="flex items-center border-b border-slate-800 bg-slate-900/50">
-                  <button 
-                      onClick={() => setShowPromptSettings(false)}
-                      className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${!showPromptSettings ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                      <BookOpen size={16} /> Guide
-                  </button>
-                  <button 
-                      onClick={() => setShowPromptSettings(true)}
-                      className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${showPromptSettings ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                      <Settings size={16} /> AI Settings
-                  </button>
-               </div>
+          {/* Right Sidebar: Subtitle Panel */}
+          <div className="lg:col-span-1 flex flex-col min-h-[400px] h-[600px]">
+            <SubtitlePanel
+              currentTime={videoState.currentTime}
+              subtitleState={subtitleState}
+              setSubtitleState={setSubtitleState}
+              onSeek={handleSeek}
+              videoFile={videoState.file}
+              onLoadSubtitle={handleLoadSubtitle}
+            />
+          </div>
+        </div>
 
-               <div className="p-5 flex-1 overflow-y-auto">
-                  {showPromptSettings ? (
-                      <div className="space-y-6 animate-fade-in">
-                          <div>
-                              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
-                                  Preset Prompts
-                              </label>
-                              <div className="grid grid-cols-1 gap-2">
-                                  {PRESET_PROMPTS.map((preset, idx) => (
-                                      <button
-                                          key={idx}
-                                          onClick={() => setCurrentPrompt(preset.value)}
-                                          className={`text-left text-xs p-3 rounded-lg border transition-all duration-200 ${currentPrompt === preset.value ? 'bg-blue-600/10 border-blue-500/50 text-blue-200 shadow-[0_0_15px_rgba(37,99,235,0.1)]' : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:border-slate-600 hover:bg-slate-900'}`}
-                                      >
-                                          {preset.label}
-                                      </button>
-                                  ))}
-                              </div>
-                          </div>
-                          <div>
-                              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex justify-between items-end">
-                                  <span>Active Prompt</span>
-                                  <span className="text-[10px] text-slate-600 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">Auto-saved</span>
-                              </label>
-                              <textarea 
-                                  value={currentPrompt}
-                                  onChange={(e) => setCurrentPrompt(e.target.value)}
-                                  className="w-full h-48 bg-slate-950 text-slate-300 text-xs p-4 rounded-lg border border-slate-800 focus:border-blue-500 outline-none font-mono resize-y leading-relaxed shadow-inner"
-                                  placeholder="Enter instructions for the AI..."
-                              />
-                          </div>
-                      </div>
-                  ) : (
-                      <div className="text-sm text-slate-400 animate-fade-in space-y-4">
-                          <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-800">
-                             <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
-                                <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">1</span>
-                                Load Video
-                             </h3>
-                             <p className="text-slate-400 text-xs leading-relaxed ml-8">Select a video file from your computer. We support MP4, WebM, and other common formats.</p>
-                          </div>
+        {/* Guide & AI Settings Section */}
+        <div className="w-full">
+          <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-sm flex flex-col">
+             {/* Tab/Header */}
+             <div className="flex items-center border-b border-slate-800 bg-slate-900/50">
+                <button 
+                    onClick={() => setShowPromptSettings(false)}
+                    className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${!showPromptSettings ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    <BookOpen size={16} /> Guide
+                </button>
+                <button 
+                    onClick={() => setShowPromptSettings(true)}
+                    className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${showPromptSettings ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    <Settings size={16} /> AI Settings
+                </button>
+             </div>
 
-                          <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-800">
-                             <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
-                                <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">2</span>
-                                Capture
-                             </h3>
-                             <p className="text-slate-400 text-xs leading-relaxed ml-8">
-                                Press <kbd className="bg-slate-700 px-1.5 py-0.5 rounded text-white font-mono text-[10px] border border-slate-600">M</kbd> at any key moment. 
-                                The AI will listen to the last <strong>2 minutes</strong> of audio and generate notes below.
-                             </p>
-                          </div>
-                          
-                          <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-800">
-                             <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
-                                <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">3</span>
-                                Review & Export
-                             </h3>
-                             <p className="text-slate-400 text-xs leading-relaxed ml-8">
-                                Notes appear at the bottom. You can export them as PDF or Markdown using the buttons above the notes list.
-                             </p>
-                          </div>
-                      </div>
-                  )}
-               </div>
-            </div>
+             <div className="p-5">
+                {showPromptSettings ? (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fade-in">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+                                Preset Prompts
+                            </label>
+                            <div className="grid grid-cols-1 gap-2">
+                                {PRESET_PROMPTS.map((preset, idx) => (
+                                    <button
+                                        key={idx}
+                                        onClick={() => setCurrentPrompt(preset.value)}
+                                        className={`text-left text-xs p-3 rounded-lg border transition-all duration-200 ${currentPrompt === preset.value ? 'bg-blue-600/10 border-blue-500/50 text-blue-200 shadow-[0_0_15px_rgba(37,99,235,0.1)]' : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:border-slate-600 hover:bg-slate-900'}`}
+                                    >
+                                        {preset.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex justify-between items-end">
+                                <span>Active Prompt</span>
+                                <span className="text-[10px] text-slate-600 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">Auto-saved</span>
+                            </label>
+                            <textarea 
+                                value={currentPrompt}
+                                onChange={(e) => setCurrentPrompt(e.target.value)}
+                                className="w-full h-64 bg-slate-950 text-slate-300 text-xs p-4 rounded-lg border border-slate-800 focus:border-blue-500 outline-none font-mono resize-y leading-relaxed shadow-inner"
+                                placeholder="Enter instructions for the AI..."
+                            />
+                        </div>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-slate-400 animate-fade-in">
+                        <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-800">
+                           <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
+                              <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">1</span>
+                              Load Video
+                           </h3>
+                           <p className="text-slate-400 text-xs leading-relaxed ml-8">Select a video file from your computer. We support MP4, WebM, and other common formats.</p>
+                        </div>
+
+                        <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-800">
+                           <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
+                              <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">2</span>
+                              Capture
+                           </h3>
+                           <p className="text-slate-400 text-xs leading-relaxed ml-8">
+                              Press <kbd className="bg-slate-700 px-1.5 py-0.5 rounded text-white font-mono text-[10px] border border-slate-600">M</kbd> at any key moment. 
+                              The AI will listen to the last <strong>2 minutes</strong> of audio and generate notes below.
+                           </p>
+                        </div>
+                        
+                        <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-800">
+                           <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
+                              <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-xs text-white">3</span>
+                              Review & Export
+                           </h3>
+                           <p className="text-slate-400 text-xs leading-relaxed ml-8">
+                              Notes appear at the bottom. You can export them as PDF or Markdown using the buttons above the notes list.
+                           </p>
+                        </div>
+                    </div>
+                )}
+             </div>
           </div>
         </div>
 
@@ -544,11 +575,6 @@ const App: React.FC = () => {
                 )}
             </div>
         </div>
-
-        {/* Subtitle Transcriber */}
-        <section id="transcriber" className="w-full scroll-mt-24">
-          <Transcriber file={videoState.file} />
-        </section>
 
       </main>
     </div>

@@ -16,6 +16,20 @@ export interface VideoState {
   volume: number;
 }
 
+export interface SubtitleSegment {
+  id: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface SubtitleState {
+  segments: SubtitleSegment[];
+  isRecognizing: boolean;
+  recognitionProgress: string;
+  vttUrl: string | null;
+}
+
 export enum ToastType {
   SUCCESS = 'success',
   ERROR = 'error',

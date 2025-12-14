@@ -7,13 +7,15 @@ interface VideoPlayerProps {
   videoState: VideoState;
   setVideoState: React.Dispatch<React.SetStateAction<VideoState>>;
   videoRef: React.RefObject<HTMLVideoElement>;
+  subtitleUrl?: string | null;
 }
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
   onCapture, 
   videoState, 
   setVideoState,
-  videoRef 
+  videoRef,
+  subtitleUrl 
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -174,7 +176,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         onTimeUpdate={handleTimeUpdate}
         onClick={togglePlay}
         controls={false}
-      />
+      >
+        {subtitleUrl && (
+          <track
+            kind="subtitles"
+            src={subtitleUrl}
+            srcLang="en"
+            default
+          />
+        )}
+      </video>
       
       {/* Hidden Canvas for Thumbnails */}
       <canvas ref={canvasRef} className="hidden" />
