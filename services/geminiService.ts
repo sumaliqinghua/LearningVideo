@@ -1,11 +1,22 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
+
+let TEXT_MODEL = process.env.QINIU_TEXT_MODEL || "deepseek-v3";
+const DEFAULT_BASE_URL = process.env.QINIU_API_BASE_URL || "https://api.qnaigc.com/v1";
 
 const getClient = () => {
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.QINIU_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
-    throw new Error("API Key not found. Please set the API_KEY environment variable.");
+    throw new Error("QINIU_API_KEY is missing from environment variables");
   }
-  return new GoogleGenAI({ apiKey });
+  return new OpenAI({
+    apiKey,
+    baseURL: DEFAULT_BASE_URL,
+    dangerouslyAllowBrowser: true
+  });
+};
+
+export const setTextModel = (model: string) => {
+  TEXT_MODEL = model || TEXT_MODEL;
 };
 
 /**
@@ -30,26 +41,33 @@ export const analyzeAudio = async (base64Audio: string, userPrompt: string): Pro
       Format the output in clear Markdown.
     `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: 'audio/wav',
-              data: base64Audio,
+    // Use OpenAI chat completions with audio input
+    const response = await ai.chat.completions.create({
+      model: TEXT_MODEL,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              input_audio: {
+                data: base64Audio,
+                format: "wav"
+              }
             },
-          },
-          {
-            text: promptToUse,
-          },
-        ],
-      },
+            {
+              type: "text",
+              text: promptToUse
+            }
+          ]
+        }
+      ],
+      temperature: 0.3
     });
 
-    return response.text || "No analysis generated.";
+    return response.choices[0]?.message?.content || "No analysis generated.";
   } catch (error) {
-    console.error("Gemini API Error:", error);
+    console.error("Qiniu API Error:", error);
     return "Error generating notes from audio. Please check your API key and network.";
   }
 };
