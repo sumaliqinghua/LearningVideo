@@ -3,7 +3,8 @@ import { VideoPlayer } from './components/VideoPlayer';
 import { NoteCard } from './components/NoteCard';
 import { SubtitlePanel } from './components/SubtitlePanel';
 import { Note, VideoState, SubtitleState } from './types';
-import { analyzeAudio } from './services/geminiService';
+import { analyzeAudio, analyzeText } from './services/geminiService';
+import { getCachedModels } from './services/transcribe';
 import { decodeAudioFromFile, sliceAudioBuffer, audioBufferToWav, blobToBase64 } from './utils/audioUtils';
 import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
@@ -51,6 +52,7 @@ const App: React.FC = () => {
     isPlaying: false,
     isAudioReady: false,
     volume: 1,
+    showSubtitles: true,
   });
 
   const [notes, setNotes] = useState<Note[]>([]);
@@ -62,7 +64,9 @@ const App: React.FC = () => {
     isRecognizing: false,
     recognitionProgress: '',
     vttUrl: null,
+    recognitionModel: 'base',
   });
+  const [cachedModels, setCachedModels] = useState<string[]>([]);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const fullAudioBufferRef = useRef<AudioBuffer | null>(null);
@@ -85,6 +89,21 @@ const App: React.FC = () => {
     }
   }, [videoState.file]);
 
+  // Poll for cached models
+  useEffect(() => {
+    const fetchCachedModels = async () => {
+      const models = await getCachedModels();
+      setCachedModels(models);
+    };
+
+    // Fetch immediately
+    fetchCachedModels();
+
+    // Poll every 5 seconds
+    const interval = setInterval(fetchCachedModels, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   const handleRemoveVideo = () => {
     if (window.confirm("Are you sure you want to remove the current video?")) {
         setVideoState({
@@ -95,6 +114,7 @@ const App: React.FC = () => {
             isPlaying: false,
             isAudioReady: false,
             volume: 1,
+            showSubtitles: true,
         });
         fullAudioBufferRef.current = null;
         setNotes([]);
@@ -103,16 +123,12 @@ const App: React.FC = () => {
           isRecognizing: false,
           recognitionProgress: '',
           vttUrl: null,
+          recognitionModel: 'base',
         });
     }
   };
 
   const handleCapture = async (timestamp: number, thumbnailDataUrl: string) => {
-    if (!fullAudioBufferRef.current) {
-      alert("Audio track is not ready yet. Please wait a moment.");
-      return;
-    }
-
     const newNoteId = Date.now().toString();
     
     // 1. Create a placeholder note immediately
@@ -126,16 +142,44 @@ const App: React.FC = () => {
 
     setNotes((prev) => [newNote, ...prev]);
 
-    // 2. Process Audio & Call Gemini API
+    // 2. Use subtitle text if available, otherwise fall back to audio
     try {
-      // Slice audio: Recent 2 minutes (120 seconds) up to current timestamp
-      const duration = 120; 
-      const audioSlice = sliceAudioBuffer(fullAudioBufferRef.current, timestamp, duration);
-      const wavBlob = audioBufferToWav(audioSlice);
-      const base64Audio = await blobToBase64(wavBlob);
+      let analysis: string;
       
-      // Pass the CURRENT prompt state
-      const analysis = await analyzeAudio(base64Audio, currentPrompt);
+      if (subtitleState.segments.length > 0) {
+        // Use subtitles: 1.5 minutes before + 30 seconds after current time
+        const startTime = Math.max(0, timestamp - 90); // 1.5 minutes = 90 seconds
+        const endTime = timestamp + 30; // 30 seconds after
+        
+        // Filter subtitle segments within the time range
+        const relevantSegments = subtitleState.segments.filter(
+          seg => seg.start >= startTime && seg.start <= endTime
+        );
+        
+        if (relevantSegments.length === 0) {
+          throw new Error("No subtitles found in the specified time range.");
+        }
+        
+        // Combine subtitle text
+        const subtitleText = relevantSegments.map(seg => seg.text).join(' ');
+        
+        // Analyze using subtitle text
+        analysis = await analyzeText(subtitleText, currentPrompt);
+      } else {
+        // Fall back to audio analysis if no subtitles
+        if (!fullAudioBufferRef.current) {
+          throw new Error("Neither subtitles nor audio are available.");
+        }
+        
+        // Slice audio: Recent 2 minutes (120 seconds) up to current timestamp
+        const duration = 120; 
+        const audioSlice = sliceAudioBuffer(fullAudioBufferRef.current, timestamp, duration);
+        const wavBlob = audioBufferToWav(audioSlice);
+        const base64Audio = await blobToBase64(wavBlob);
+        
+        // Pass the CURRENT prompt state
+        analysis = await analyzeAudio(base64Audio, currentPrompt);
+      }
 
       // 3. Update note with result
       setNotes((prev) => 
@@ -147,10 +191,11 @@ const App: React.FC = () => {
       );
     } catch (error) {
       console.error("Failed to generate note:", error);
+      const errorMsg = error instanceof Error ? error.message : "Error processing. Please try again.";
       setNotes((prev) => 
         prev.map((n) => 
           n.id === newNoteId 
-            ? { ...n, content: "Error processing audio. Please try again.", isGenerating: false } 
+            ? { ...n, content: errorMsg, isGenerating: false } 
             : n
         )
       );
@@ -168,6 +213,8 @@ const App: React.FC = () => {
     // The subtitle is already loaded into state via SubtitlePanel
     // This handler is called to inform parent that subtitle is ready
     console.log('Subtitle loaded:', vttUrl);
+    console.log('Current subtitle segments count:', subtitleState.segments.length);
+    console.trace('handleLoadSubtitle called from:');
   };
 
   const handleUpdateContent = (id: string, newContent: string) => {
@@ -444,20 +491,42 @@ const App: React.FC = () => {
              <div className="p-5">
                 {showPromptSettings ? (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fade-in">
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
-                                Preset Prompts
-                            </label>
-                            <div className="grid grid-cols-1 gap-2">
-                                {PRESET_PROMPTS.map((preset, idx) => (
-                                    <button
-                                        key={idx}
-                                        onClick={() => setCurrentPrompt(preset.value)}
-                                        className={`text-left text-xs p-3 rounded-lg border transition-all duration-200 ${currentPrompt === preset.value ? 'bg-blue-600/10 border-blue-500/50 text-blue-200 shadow-[0_0_15px_rgba(37,99,235,0.1)]' : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:border-slate-600 hover:bg-slate-900'}`}
-                                    >
-                                        {preset.label}
-                                    </button>
-                                ))}
+                        <div className="space-y-6">
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+                                    Preset Prompts
+                                </label>
+                                <div className="grid grid-cols-1 gap-2">
+                                    {PRESET_PROMPTS.map((preset, idx) => (
+                                        <button
+                                            key={idx}
+                                            onClick={() => setCurrentPrompt(preset.value)}
+                                            className={`text-left text-xs p-3 rounded-lg border transition-all duration-200 ${currentPrompt === preset.value ? 'bg-blue-600/10 border-blue-500/50 text-blue-200 shadow-[0_0_15px_rgba(37,99,235,0.1)]' : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:border-slate-600 hover:bg-slate-900'}`}
+                                        >
+                                            {preset.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+                                    Recognition Model
+                                </label>
+                                <select
+                                    value={subtitleState.recognitionModel}
+                                    onChange={(e) => setSubtitleState(prev => ({ ...prev, recognitionModel: e.target.value }))}
+                                    className="w-full bg-slate-950 text-slate-300 text-xs p-3 rounded-lg border border-slate-800 focus:border-blue-500 outline-none"
+                                >
+                                    <option value="tiny">{cachedModels.includes('tiny') ? '✓ ' : ''}Tiny (Fastest, less accurate)</option>
+                                    <option value="base">{cachedModels.includes('base') ? '✓ ' : ''}Base (Balanced)</option>
+                                    <option value="small">{cachedModels.includes('small') ? '✓ ' : ''}Small (Better accuracy)</option>
+                                    <option value="medium">{cachedModels.includes('medium') ? '✓ ' : ''}Medium (High accuracy)</option>
+                                    <option value="large-v2">{cachedModels.includes('large-v2') ? '✓ ' : ''}Large v2 (Best accuracy)</option>
+                                    <option value="large-v3">{cachedModels.includes('large-v3') ? '✓ ' : ''}Large v3 (Latest)</option>
+                                </select>
+                                <p className="text-[10px] text-slate-600 mt-2">
+                                    Used for speech recognition. Larger models are more accurate but slower.
+                                </p>
                             </div>
                         </div>
                         <div>

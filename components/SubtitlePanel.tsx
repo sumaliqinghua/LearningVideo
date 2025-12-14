@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Upload, Loader2, FileText } from 'lucide-react';
+import { Upload, Loader2, FileText, Download } from 'lucide-react';
 import { SubtitleState } from '../types';
 import { transcribeFile } from '../services/transcribe';
 
@@ -58,12 +58,13 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
         const vttBlob = new Blob([vttContent], { type: 'text/vtt' });
         const vttUrl = URL.createObjectURL(vttBlob);
 
-        setSubtitleState({
+        setSubtitleState((prev) => ({
+          ...prev,
           segments,
           isRecognizing: false,
           recognitionProgress: '',
           vttUrl,
-        });
+        }));
         onLoadSubtitle(vttUrl);
       }
     } catch (error) {
@@ -91,7 +92,10 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
         recognitionProgress: 'Processing audio... This may take a few minutes.',
       }));
 
-      const result = await transcribeFile(videoFile);
+      console.log('Starting transcription with model:', subtitleState.recognitionModel);
+      const result = await transcribeFile(videoFile, subtitleState.recognitionModel || undefined);
+
+      console.log('Transcription result:', result);
 
       const segments = result.segments.map((seg) => ({
         id: seg.id,
@@ -100,16 +104,30 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
         text: seg.text,
       }));
 
+      console.log('Parsed segments:', segments.length);
+
+      if (segments.length === 0) {
+        setSubtitleState((prev) => ({
+          ...prev,
+          isRecognizing: false,
+          recognitionProgress: '',
+        }));
+        alert('No speech detected in the video. Please make sure the video contains spoken content, not just background music or silence.');
+        return;
+      }
+
       // Convert to VTT for video element
       const vttBlob = new Blob([result.vtt], { type: 'text/vtt' });
       const vttUrl = URL.createObjectURL(vttBlob);
 
-      setSubtitleState({
+      setSubtitleState((prev) => ({
+        ...prev,
         segments,
         isRecognizing: false,
         recognitionProgress: '',
         vttUrl,
-      });
+      }));
+      console.log('Recognition completed, calling onLoadSubtitle with:', vttUrl);
       onLoadSubtitle(vttUrl);
     } catch (error) {
       console.error('Failed to recognize subtitle:', error);
@@ -118,7 +136,8 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
         isRecognizing: false,
         recognitionProgress: '',
       }));
-      alert('Failed to recognize subtitle. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      alert(`Failed to recognize subtitle: ${errorMessage}\n\nPlease check:\n- The transcription service is running\n- The video contains spoken content\n- Your network connection`);
     }
   };
 
@@ -126,6 +145,25 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const downloadSubtitle = (format: 'srt' | 'vtt') => {
+    let content = '';
+    const filename = `subtitle_${Date.now()}.${format}`;
+
+    if (format === 'srt') {
+      content = convertToSRT(subtitleState.segments);
+    } else {
+      content = convertToVTT(subtitleState.segments);
+    }
+
+    const blob = new Blob([content], { type: format === 'srt' ? 'text/plain' : 'text/vtt' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   if (subtitleState.isRecognizing) {
@@ -179,9 +217,29 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
 
   return (
     <div className="h-full bg-slate-900 rounded-xl border border-slate-800 flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-200">Subtitles</h3>
-        <span className="text-xs text-slate-500">{subtitleState.segments.length} segments</span>
+      <div className="px-4 py-3 border-b border-slate-800">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-slate-200">Subtitles</h3>
+          <span className="text-xs text-slate-500">{subtitleState.segments.length} segments</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => downloadSubtitle('srt')}
+            className="flex-1 px-2 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded flex items-center justify-center gap-1.5 transition-colors border border-slate-700"
+            title="Download SRT"
+          >
+            <Download size={14} />
+            SRT
+          </button>
+          <button
+            onClick={() => downloadSubtitle('vtt')}
+            className="flex-1 px-2 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded flex items-center justify-center gap-1.5 transition-colors border border-slate-700"
+            title="Download VTT"
+          >
+            <Download size={14} />
+            VTT
+          </button>
+        </div>
       </div>
       <div ref={containerRef} className="flex-1 overflow-y-auto p-4 space-y-2">
         {subtitleState.segments.map((segment, index) => {
@@ -264,10 +322,31 @@ function convertToVTT(segments: Array<{ id: number; start: number; end: number; 
   return vtt;
 }
 
+function convertToSRT(segments: Array<{ id: number; start: number; end: number; text: string }>): string {
+  let srt = '';
+  
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const startTime = formatSRTTime(seg.start);
+    const endTime = formatSRTTime(seg.end);
+    srt += `${i + 1}\n${startTime} --> ${endTime}\n${seg.text}\n\n`;
+  }
+  
+  return srt;
+}
+
 function formatVTTTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
   const ms = Math.floor((seconds % 1) * 1000);
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+}
+
+function formatSRTTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
 }

@@ -14,6 +14,7 @@ export interface VideoState {
   isPlaying: boolean;
   isAudioReady: boolean; // Tracks if the audio track is decoded and ready for slicing
   volume: number;
+  showSubtitles: boolean;
 }
 
 export interface SubtitleSegment {
@@ -28,6 +29,7 @@ export interface SubtitleState {
   isRecognizing: boolean;
   recognitionProgress: string;
   vttUrl: string | null;
+  recognitionModel: string;
 }
 
 export enum ToastType {

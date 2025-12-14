@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Upload, Play, Pause, Camera, MonitorPlay, Maximize, Volume2, VolumeX } from 'lucide-react';
+import { Upload, Play, Pause, Camera, MonitorPlay, Maximize, Volume2, VolumeX, Subtitles } from 'lucide-react';
 import { VideoState } from '../types';
 
 interface VideoPlayerProps {
@@ -87,6 +87,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       containerRef.current.requestFullscreen().catch(err => console.error(err));
     } else if (document.exitFullscreen) {
       document.exitFullscreen();
+    }
+  };
+
+  const toggleSubtitles = () => {
+    setVideoState(prev => ({ ...prev, showSubtitles: !prev.showSubtitles }));
+    // Toggle the track mode
+    if (videoRef.current) {
+      const tracks = videoRef.current.textTracks;
+      if (tracks.length > 0) {
+        tracks[0].mode = videoState.showSubtitles ? 'hidden' : 'showing';
+      }
     }
   };
 
@@ -249,6 +260,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 <span className="text-slate-300 text-xs font-mono hidden md:inline-block">
                     Press <kbd className="bg-slate-700 px-1.5 py-0.5 rounded text-white font-bold border border-slate-600 mx-1">M</kbd> to capture
                 </span>
+                {subtitleUrl && (
+                  <button 
+                      onClick={toggleSubtitles}
+                      className={`text-slate-300 hover:text-white transition-colors ${videoState.showSubtitles ? 'text-blue-400' : ''}`}
+                      title={videoState.showSubtitles ? 'Hide subtitles' : 'Show subtitles'}
+                  >
+                      <Subtitles size={20} />
+                  </button>
+                )}
                 <button 
                     onClick={captureFrame}
                     className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-all shadow-lg active:scale-95"

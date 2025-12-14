@@ -71,3 +71,43 @@ export const analyzeAudio = async (base64Audio: string, userPrompt: string): Pro
     return "Error generating notes from audio. Please check your API key and network.";
   }
 };
+
+/**
+ * Analyzes subtitle text to generate study notes.
+ * @param subtitleText The subtitle transcript text
+ * @param userPrompt The instruction prompt for the model
+ */
+export const analyzeText = async (subtitleText: string, userPrompt: string): Promise<string> => {
+  try {
+    const ai = getClient();
+    
+    // Fallback prompt if empty
+    const promptToUse = userPrompt.trim() || `
+      You are an expert technical tutor. I have just watched a segment of a tutorial video.
+      
+      Please perform the following tasks based on the transcript:
+      1. **Key Knowledge Points**: Summarize the technical concepts, commands, or logic discussed.
+      2. **Summary**: A one-sentence takeaway.
+      
+      Format the output in clear Markdown.
+    `;
+
+    const fullPrompt = `${promptToUse}\n\n**Transcript:**\n${subtitleText}`;
+
+    const response = await ai.chat.completions.create({
+      model: TEXT_MODEL,
+      messages: [
+        {
+          role: "user",
+          content: fullPrompt
+        }
+      ],
+      temperature: 0.3
+    });
+
+    return response.choices[0]?.message?.content || "No analysis generated.";
+  } catch (error) {
+    console.error("Qiniu API Error:", error);
+    return "Error generating notes from text. Please check your API key and network.";
+  }
+};

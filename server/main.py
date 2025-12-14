@@ -17,9 +17,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load model once per process. You can switch to small/medium to speed up first run.
-MODEL_SIZE = "small"  # alternatives: "base", "medium", "large-v3"
-model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+# Model cache to avoid reloading the same model
+model_cache: Dict[str, WhisperModel] = {}
+
+def get_model(model_size: str = "base") -> WhisperModel:
+    """Get or load a Whisper model. Models are cached to avoid reloading."""
+    if model_size not in model_cache:
+        print(f"\n{'='*60}")
+        print(f"📥 Downloading/Loading Whisper model: {model_size}")
+        print(f"{'='*60}")
+        print(f"This may take a few minutes on first download...")
+        print(f"Model will be cached at: ~/.cache/huggingface/hub/\n")
+        
+        model_cache[model_size] = WhisperModel(model_size, device="cpu", compute_type="int8")
+        
+        print(f"\n{'='*60}")
+        print(f"✅ Model {model_size} loaded successfully!")
+        print(f"{'='*60}\n")
+    else:
+        print(f"✨ Using cached model: {model_size}")
+    return model_cache[model_size]
 
 
 def _ts_srt(t: float | None) -> str:
@@ -64,6 +81,7 @@ def _build_vtt(segments: List[Dict[str, Any]]) -> str:
 @app.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
+    model: str = Form("base"),
     beam_size: int = Form(5),
     word_timestamps: bool = Form(True),
     vad_filter: bool = Form(True),
@@ -72,7 +90,16 @@ async def transcribe(
     raw = await file.read()
     audio_buf = io.BytesIO(raw)
 
-    seg_iter, info = model.transcribe(
+    # Get the appropriate model (will load if not cached)
+    whisper_model = get_model(model)
+    
+    print(f"\n🎬 Starting transcription...")
+    print(f"   Model: {model}")
+    print(f"   Beam size: {beam_size}")
+    print(f"   VAD filter: {vad_filter}")
+    print(f"   Word timestamps: {word_timestamps}\n")
+
+    seg_iter, info = whisper_model.transcribe(
         audio_buf,
         beam_size=beam_size,
         word_timestamps=word_timestamps,
@@ -81,8 +108,12 @@ async def transcribe(
 
     segments: List[Dict[str, Any]] = []
     full_text_parts: List[str] = []
+    segment_count = 0
 
     for s in seg_iter:
+        segment_count += 1
+        print(f"📝 Processing segment {segment_count}: {s.start:.2f}s - {s.end:.2f}s")
+        
         seg: Dict[str, Any] = {
             "id": s.id,
             "start": s.start,
@@ -95,6 +126,11 @@ async def transcribe(
             ]
         segments.append(seg)
         full_text_parts.append(s.text)
+    
+    print(f"\n✅ Transcription completed!")
+    print(f"   Language: {info.language} ({info.language_probability:.2%} confidence)")
+    print(f"   Total segments: {segment_count}")
+    print(f"   Total text length: {len(''.join(full_text_parts))} characters\n")
 
     srt_text = _build_srt(segments)
     vtt_text = _build_vtt(segments)
@@ -109,6 +145,12 @@ async def transcribe(
             "vtt": vtt_text,
         }
     )
+
+
+@app.get("/models/cached")
+async def get_cached_models():
+    """Return list of currently cached models in memory."""
+    return JSONResponse({"cached_models": list(model_cache.keys())})
 
 
 @app.post("/srt")
