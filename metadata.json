@@ -1,0 +1,5 @@
+{
+  "name": "SmartVideo Notes",
+  "description": "An intelligent video player for tutorials that generates automatic notes, timestamps, and summaries using Gemini AI.",
+  "requestFramePermissions": []
+}
