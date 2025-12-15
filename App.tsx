@@ -5,8 +5,13 @@ import { SubtitlePanel } from './components/SubtitlePanel';
 import { Note, VideoState, SubtitleState } from './types';
 import { analyzeAudio, analyzeText } from './services/geminiService';
 import { getCachedModels } from './services/transcribe';
+import { saveProjectToFolder, saveProjectAsZip, loadProjectFromFolder } from './services/projectService';
+import { openWorkspace } from './services/workspaceService';
+import { isFileSystemAccessSupported } from './utils/fileUtils';
+import { ProjectSidebar } from './components/ProjectSidebar';
+import { Workspace, ProjectItem } from './types';
 import { decodeAudioFromFile, sliceAudioBuffer, audioBufferToWav, blobToBase64 } from './utils/audioUtils';
-import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2 } from 'lucide-react';
+import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2, FolderOpen, Save } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
 
@@ -67,6 +72,7 @@ const App: React.FC = () => {
     recognitionModel: 'base',
   });
   const [cachedModels, setCachedModels] = useState<string[]>([]);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const fullAudioBufferRef = useRef<AudioBuffer | null>(null);
@@ -296,6 +302,181 @@ const App: React.FC = () => {
     }
   };
 
+  const handleSaveProject = async () => {
+    if (!videoState.file) {
+      alert('No video loaded. Please load a video first.');
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      if (isFileSystemAccessSupported()) {
+        await saveProjectToFolder(
+          videoState.file,
+          videoState.duration,
+          notes,
+          subtitleState.segments
+        );
+        alert('Project saved successfully!');
+      } else {
+        // Fallback to ZIP download for unsupported browsers
+        await saveProjectAsZip(
+          videoState.file,
+          videoState.duration,
+          notes,
+          subtitleState.segments
+        );
+        alert('Project exported as ZIP (your browser does not support folder access).');
+      }
+    } catch (error) {
+      console.error('Failed to save project:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to save project: ${errorMsg}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleOpenWorkspace = async () => {
+    try {
+      const workspaceData = await openWorkspace();
+      
+      if (!workspaceData) {
+        return; // User cancelled
+      }
+
+      setWorkspace({
+        rootDir: workspaceData.rootDir,
+        projects: workspaceData.projects,
+        currentProjectId: workspaceData.projects.length > 0 ? workspaceData.projects[0].id : null,
+      });
+
+      // Load the first project automatically
+      if (workspaceData.projects.length > 0) {
+        loadProjectById(workspaceData.projects[0].id, workspaceData.projects);
+      }
+
+      alert(`Workspace opened! Found ${workspaceData.projects.length} video(s).`);
+    } catch (error) {
+      console.error('Failed to open workspace:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to open workspace: ${errorMsg}`);
+    }
+  };
+
+  const handleSelectProject = (projectId: string) => {
+    if (!workspace) return;
+    
+    setWorkspace(prev => prev ? { ...prev, currentProjectId: projectId } : null);
+    loadProjectById(projectId, workspace.projects);
+  };
+
+  const loadProjectById = (projectId: string, projects: ProjectItem[]) => {
+    const project = projects.find(p => p.id === projectId);
+    if (!project) return;
+
+    // Load video
+    const objectUrl = URL.createObjectURL(project.videoFile);
+    setVideoState({
+      file: project.videoFile,
+      objectUrl,
+      duration: project.duration || 0,
+      currentTime: 0,
+      isPlaying: false,
+      isAudioReady: false,
+      volume: 1,
+      showSubtitles: true,
+    });
+
+    // Load notes
+    setNotes(project.notes);
+
+    // Load subtitles
+    if (project.subtitles.length > 0) {
+      const vttContent = convertToVTT(project.subtitles);
+      const vttBlob = new Blob([vttContent], { type: 'text/vtt' });
+      const vttUrl = URL.createObjectURL(vttBlob);
+
+      setSubtitleState(prev => ({
+        ...prev,
+        segments: project.subtitles,
+        vttUrl,
+      }));
+    } else {
+      setSubtitleState(prev => ({
+        ...prev,
+        segments: [],
+        vttUrl: null,
+      }));
+    }
+  };
+
+  const handleLoadProject = async () => {
+    try {
+      const projectData = await loadProjectFromFolder();
+      
+      if (!projectData) {
+        alert('Failed to load project.');
+        return;
+      }
+
+      // Load video
+      const objectUrl = URL.createObjectURL(projectData.videoFile);
+      setVideoState({
+        file: projectData.videoFile,
+        objectUrl,
+        duration: 0,
+        currentTime: 0,
+        isPlaying: false,
+        isAudioReady: false,
+        volume: 1,
+        showSubtitles: true,
+      });
+
+      // Load notes
+      setNotes(projectData.notes);
+
+      // Load subtitles
+      if (projectData.subtitles.length > 0) {
+        // Convert to VTT for video element
+        const vttContent = convertToVTT(projectData.subtitles);
+        const vttBlob = new Blob([vttContent], { type: 'text/vtt' });
+        const vttUrl = URL.createObjectURL(vttBlob);
+
+        setSubtitleState(prev => ({
+          ...prev,
+          segments: projectData.subtitles,
+          vttUrl,
+        }));
+      }
+
+      alert('Project loaded successfully!');
+    } catch (error) {
+      console.error('Failed to load project:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to load project: ${errorMsg}`);
+    }
+  };
+
+  // Helper function to convert subtitles to VTT format
+  const convertToVTT = (segments: any[]) => {
+    let vtt = 'WEBVTT\n\n';
+    for (const seg of segments) {
+      const startTime = formatVTTTime(seg.start);
+      const endTime = formatVTTTime(seg.end);
+      vtt += `${startTime} --> ${endTime}\n${seg.text}\n\n`;
+    }
+    return vtt;
+  };
+
+  const formatVTTTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+  };
+
   const handleExportPDF = async () => {
     if (notes.length === 0) return;
     
@@ -417,9 +598,29 @@ const App: React.FC = () => {
               <p className="text-xs text-slate-400">AI-Powered Tutorial Assistant</p>
             </div>
           </div>
-          <div className="flex items-center gap-4 text-sm text-slate-400">
+          <div className="flex items-center gap-2 text-sm text-slate-400">
+             {/* Workspace Management Buttons */}
+             <button
+                onClick={handleOpenWorkspace}
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition-all border border-slate-700"
+                title="Open Workspace Folder"
+             >
+                <FolderOpen size={16} />
+                <span className="hidden sm:inline">Open Workspace</span>
+             </button>
+
+             <button
+                onClick={handleSaveProject}
+                disabled={!videoState.file || isExporting}
+                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Save Project"
+             >
+                {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                <span className="hidden sm:inline">Save Project</span>
+             </button>
+
              {videoState.file && (
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 ml-2">
                      <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
                         <FileVideo size={14} className="text-blue-400" />
                         <span className="truncate max-w-[150px] md:max-w-[250px]">{videoState.file.name}</span>
@@ -439,35 +640,48 @@ const App: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-8 flex flex-col gap-8">
-        
-        {/* Top Section: Video Player & Subtitle Panel */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Video Player Area */}
-          <div className="lg:col-span-2 flex flex-col gap-4">
-            <div className="rounded-xl overflow-hidden shadow-2xl bg-black ring-1 ring-slate-800">
-                <VideoPlayer 
-                    onCapture={handleCapture}
-                    videoState={videoState}
-                    setVideoState={setVideoState}
-                    videoRef={videoRef}
-                    subtitleUrl={subtitleState.vttUrl}
-                />
-            </div>
-          </div>
-
-          {/* Right Sidebar: Subtitle Panel */}
-          <div className="lg:col-span-1 flex flex-col min-h-[400px] h-[600px]">
-            <SubtitlePanel
-              currentTime={videoState.currentTime}
-              subtitleState={subtitleState}
-              setSubtitleState={setSubtitleState}
-              onSeek={handleSeek}
-              videoFile={videoState.file}
-              onLoadSubtitle={handleLoadSubtitle}
+      <main className="flex-1 flex overflow-hidden">
+        {/* Project Sidebar (only show when workspace is open) */}
+        {workspace && workspace.projects.length > 0 && (
+          <div className="w-64 flex-shrink-0 h-full overflow-hidden">
+            <ProjectSidebar
+              projects={workspace.projects}
+              currentProjectId={workspace.currentProjectId}
+              onSelectProject={handleSelectProject}
             />
           </div>
-        </div>
+        )}
+
+        {/* Main Content Area */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8">
+          <div className="max-w-7xl mx-auto flex flex-col gap-8">
+            {/* Top Section: Video Player & Subtitle Panel */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Video Player Area */}
+              <div className="lg:col-span-2 flex flex-col gap-4">
+                <div className="rounded-xl overflow-hidden shadow-2xl bg-black ring-1 ring-slate-800">
+                    <VideoPlayer 
+                        onCapture={handleCapture}
+                        videoState={videoState}
+                        setVideoState={setVideoState}
+                        videoRef={videoRef}
+                        subtitleUrl={subtitleState.vttUrl}
+                    />
+                </div>
+              </div>
+
+              {/* Right Sidebar: Subtitle Panel */}
+              <div className="lg:col-span-1 flex flex-col min-h-[400px] h-[600px]">
+                <SubtitlePanel
+                  currentTime={videoState.currentTime}
+                  subtitleState={subtitleState}
+                  setSubtitleState={setSubtitleState}
+                  onSeek={handleSeek}
+                  videoFile={videoState.file}
+                  onLoadSubtitle={handleLoadSubtitle}
+                />
+              </div>
+            </div>
 
         {/* Guide & AI Settings Section */}
         <div className="w-full">
@@ -578,8 +792,8 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Bottom Section: Notes Feed */}
-        <div className="w-full">
+            {/* Bottom Section: Notes Feed */}
+            <div className="w-full">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 pb-2 border-b border-slate-800 gap-4">
                 <h2 className="text-xl font-bold text-white flex items-center gap-3">
                     <BookOpen className="text-blue-500" size={24} />
@@ -643,8 +857,9 @@ const App: React.FC = () => {
                 ))
                 )}
             </div>
+            </div>
+          </div>
         </div>
-
       </main>
     </div>
   );

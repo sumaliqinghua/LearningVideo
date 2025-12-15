@@ -32,6 +32,25 @@ export interface SubtitleState {
   recognitionModel: string;
 }
 
+export interface ProjectItem {
+  id: string;
+  name: string;
+  videoFile: File;
+  subtitleFile?: File;
+  notesFile?: File;
+  thumbnailsDir?: any; // FileSystemDirectoryHandle
+  notes: Note[];
+  subtitles: SubtitleSegment[];
+  duration: number;
+  lastModified: Date;
+}
+
+export interface Workspace {
+  rootDir: any; // FileSystemDirectoryHandle
+  projects: ProjectItem[];
+  currentProjectId: string | null;
+}
+
 export enum ToastType {
   SUCCESS = 'success',
   ERROR = 'error',
