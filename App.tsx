@@ -112,6 +112,16 @@ const App: React.FC = () => {
 
   const handleRemoveVideo = () => {
     if (window.confirm("Are you sure you want to remove the current video?")) {
+        // Save current project's subtitles before removing (in workspace mode)
+        if (workspace && workspace.currentProjectId && subtitleState.segments.length > 0) {
+          const updatedProjects = workspace.projects.map(p => 
+            p.id === workspace.currentProjectId 
+              ? { ...p, subtitles: subtitleState.segments }
+              : p
+          );
+          setWorkspace(prev => prev ? { ...prev, projects: updatedProjects } : null);
+        }
+        
         setVideoState({
             file: null,
             objectUrl: null,
@@ -367,8 +377,25 @@ const App: React.FC = () => {
   const handleSelectProject = (projectId: string) => {
     if (!workspace) return;
     
-    setWorkspace(prev => prev ? { ...prev, currentProjectId: projectId } : null);
-    loadProjectById(projectId, workspace.projects);
+    // Save current project's subtitles before switching
+    if (workspace.currentProjectId && subtitleState.segments.length > 0) {
+      const updatedProjects = workspace.projects.map(p => 
+        p.id === workspace.currentProjectId 
+          ? { ...p, subtitles: subtitleState.segments }
+          : p
+      );
+      
+      setWorkspace(prev => prev ? { 
+        ...prev, 
+        currentProjectId: projectId,
+        projects: updatedProjects 
+      } : null);
+      
+      loadProjectById(projectId, updatedProjects);
+    } else {
+      setWorkspace(prev => prev ? { ...prev, currentProjectId: projectId } : null);
+      loadProjectById(projectId, workspace.projects);
+    }
   };
 
   const loadProjectById = (projectId: string, projects: ProjectItem[]) => {
@@ -397,17 +424,22 @@ const App: React.FC = () => {
       const vttBlob = new Blob([vttContent], { type: 'text/vtt' });
       const vttUrl = URL.createObjectURL(vttBlob);
 
-      setSubtitleState(prev => ({
-        ...prev,
+      setSubtitleState({
         segments: project.subtitles,
+        isRecognizing: false,
+        recognitionProgress: '',
         vttUrl,
-      }));
+        recognitionModel: 'base',
+      });
     } else {
-      setSubtitleState(prev => ({
-        ...prev,
+      // Clear subtitles when switching to a video without subtitles
+      setSubtitleState({
         segments: [],
+        isRecognizing: false,
+        recognitionProgress: '',
         vttUrl: null,
-      }));
+        recognitionModel: 'base',
+      });
     }
   };
 

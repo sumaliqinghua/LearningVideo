@@ -63,7 +63,66 @@ function parseVTT(content: string): SubtitleSegment[] {
 }
 
 /**
- * Scan a folder and identify all video projects
+ * Recursively scan a folder and its subfolders for project files
+ */
+async function scanFolderRecursive(
+  dirHandle: any,
+  projectsMap: Map<string, {
+    videoFile?: File;
+    subtitleFile?: File;
+    notesFile?: File;
+    thumbnailsDir?: any;
+    relativePath?: string;
+  }>,
+  relativePath: string = ''
+): Promise<void> {
+  for await (const entry of dirHandle.values()) {
+    if (entry.kind === 'file') {
+      const file: File = await entry.getFile();
+      const ext = getExtension(file.name);
+      const currentPath = relativePath ? `${relativePath}/${file.name}` : file.name;
+      
+      if (isVideoExt(ext)) {
+        const baseName = getBasename(file.name);
+        const key = relativePath ? `${relativePath}/${baseName}` : baseName;
+        if (!projectsMap.has(key)) {
+          projectsMap.set(key, { relativePath });
+        }
+        projectsMap.get(key)!.videoFile = file;
+      } else if (isSubtitleExt(ext)) {
+        const baseName = getBasename(file.name);
+        const key = relativePath ? `${relativePath}/${baseName}` : baseName;
+        if (!projectsMap.has(key)) {
+          projectsMap.set(key, { relativePath });
+        }
+        projectsMap.get(key)!.subtitleFile = file;
+      } else if (file.name.endsWith('.notes.json')) {
+        const baseName = file.name.replace('.notes.json', '');
+        const key = relativePath ? `${relativePath}/${baseName}` : baseName;
+        if (!projectsMap.has(key)) {
+          projectsMap.set(key, { relativePath });
+        }
+        projectsMap.get(key)!.notesFile = file;
+      }
+    } else if (entry.kind === 'directory') {
+      if (entry.name.endsWith('.thumbnails')) {
+        const baseName = entry.name.replace('.thumbnails', '');
+        const key = relativePath ? `${relativePath}/${baseName}` : baseName;
+        if (!projectsMap.has(key)) {
+          projectsMap.set(key, { relativePath });
+        }
+        projectsMap.get(key)!.thumbnailsDir = entry;
+      } else {
+        // Recursively scan subdirectory
+        const subPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await scanFolderRecursive(entry, projectsMap, subPath);
+      }
+    }
+  }
+}
+
+/**
+ * Scan a folder and identify all video projects (recursively)
  */
 export async function scanWorkspaceFolder(dirHandle: any): Promise<ProjectItem[]> {
   const projectsMap = new Map<string, {
@@ -71,41 +130,11 @@ export async function scanWorkspaceFolder(dirHandle: any): Promise<ProjectItem[]
     subtitleFile?: File;
     notesFile?: File;
     thumbnailsDir?: any;
+    relativePath?: string;
   }>();
 
-  // First pass: scan all files and directories
-  for await (const entry of dirHandle.values()) {
-    if (entry.kind === 'file') {
-      const file: File = await entry.getFile();
-      const ext = getExtension(file.name);
-      
-      if (isVideoExt(ext)) {
-        const baseName = getBasename(file.name);
-        if (!projectsMap.has(baseName)) {
-          projectsMap.set(baseName, {});
-        }
-        projectsMap.get(baseName)!.videoFile = file;
-      } else if (isSubtitleExt(ext)) {
-        const baseName = getBasename(file.name);
-        if (!projectsMap.has(baseName)) {
-          projectsMap.set(baseName, {});
-        }
-        projectsMap.get(baseName)!.subtitleFile = file;
-      } else if (file.name.endsWith('.notes.json')) {
-        const baseName = file.name.replace('.notes.json', '');
-        if (!projectsMap.has(baseName)) {
-          projectsMap.set(baseName, {});
-        }
-        projectsMap.get(baseName)!.notesFile = file;
-      }
-    } else if (entry.kind === 'directory' && entry.name.endsWith('.thumbnails')) {
-      const baseName = entry.name.replace('.thumbnails', '');
-      if (!projectsMap.has(baseName)) {
-        projectsMap.set(baseName, {});
-      }
-      projectsMap.get(baseName)!.thumbnailsDir = entry;
-    }
-  }
+  // Recursively scan all files and directories
+  await scanFolderRecursive(dirHandle, projectsMap);
 
   // Second pass: create project items (only for entries with video files)
   const projects: ProjectItem[] = [];
