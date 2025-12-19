@@ -32,6 +32,14 @@ export interface SubtitleState {
   recognitionModel: string;
 }
 
+export interface SummarySegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  title: string;
+  content: string;
+}
+
 export interface ProjectItem {
   id: string;
   name: string;

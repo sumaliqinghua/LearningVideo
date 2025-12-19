@@ -2,16 +2,17 @@ import React, { useState, useRef, useEffect } from 'react';
 import { VideoPlayer } from './components/VideoPlayer';
 import { NoteCard } from './components/NoteCard';
 import { SubtitlePanel } from './components/SubtitlePanel';
-import { Note, VideoState, SubtitleState } from './types';
+import { Note, VideoState, SubtitleState, SummarySegment } from './types';
 import { analyzeAudio, analyzeText } from './services/geminiService';
 import { getCachedModels } from './services/transcribe';
 import { saveProjectToFolder, saveProjectAsZip, loadProjectFromFolder } from './services/projectService';
 import { openWorkspace } from './services/workspaceService';
 import { isFileSystemAccessSupported } from './utils/fileUtils';
 import { ProjectSidebar } from './components/ProjectSidebar';
+import { SummaryPanel } from './components/SummaryPanel';
 import { Workspace, ProjectItem } from './types';
 import { decodeAudioFromFile, sliceAudioBuffer, audioBufferToWav, blobToBase64 } from './utils/audioUtils';
-import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2, FolderOpen, Save } from 'lucide-react';
+import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2, FolderOpen, Save, Check, Cloud } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
 
@@ -73,9 +74,12 @@ const App: React.FC = () => {
   });
   const [cachedModels, setCachedModels] = useState<string[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [summarySegments, setSummarySegments] = useState<SummarySegment[]>([]);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const fullAudioBufferRef = useRef<AudioBuffer | null>(null);
+  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Decode audio when file changes
   useEffect(() => {
@@ -108,6 +112,56 @@ const App: React.FC = () => {
     // Poll every 5 seconds
     const interval = setInterval(fetchCachedModels, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Auto-save functionality with debounce
+  const triggerAutoSave = () => {
+    if (!workspace || !workspace.rootDir || !workspace.currentProjectId) {
+      return; // Only auto-save in workspace mode
+    }
+
+    // Clear existing timeout
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    // Set new timeout (debounce for 2 seconds)
+    autoSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        setAutoSaveStatus('saving');
+        
+        const currentProject = workspace.projects.find(p => p.id === workspace.currentProjectId);
+        if (!currentProject || !currentProject.videoFile) {
+          return;
+        }
+
+        // Use the workspace root directory and save silently
+        await saveProjectToFolder(
+          currentProject.videoFile,
+          videoState.duration,
+          notes,
+          subtitleState.segments
+        );
+
+        setAutoSaveStatus('saved');
+        console.log('Auto-saved project:', currentProject.name);
+        
+        // Clear "saved" status after 2 seconds
+        setTimeout(() => setAutoSaveStatus('idle'), 2000);
+      } catch (error) {
+        console.error('Auto-save failed:', error);
+        setAutoSaveStatus('idle');
+      }
+    }, 2000);
+  };
+
+  // Cleanup auto-save timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
   }, []);
 
   const handleRemoveVideo = () => {
@@ -205,6 +259,9 @@ const App: React.FC = () => {
             : n
         )
       );
+      
+      // Trigger auto-save after generating note
+      triggerAutoSave();
     } catch (error) {
       console.error("Failed to generate note:", error);
       const errorMsg = error instanceof Error ? error.message : "Error processing. Please try again.";
@@ -230,18 +287,32 @@ const App: React.FC = () => {
     // This handler is called to inform parent that subtitle is ready
     console.log('Subtitle loaded:', vttUrl);
     console.log('Current subtitle segments count:', subtitleState.segments.length);
-    console.trace('handleLoadSubtitle called from:');
+    
+    // Trigger auto-save after subtitle is loaded
+    triggerAutoSave();
+  };
+
+  const handleGenerateSummary = (segments: SummarySegment[]) => {
+    setSummarySegments(segments);
+    // Trigger auto-save after generating summary
+    triggerAutoSave();
   };
 
   const handleUpdateContent = (id: string, newContent: string) => {
     setNotes((prev) =>
       prev.map((n) => (n.id === id ? { ...n, content: newContent } : n))
     );
+    
+    // Trigger auto-save after editing note
+    triggerAutoSave();
   };
 
   const handleDeleteNote = (id: string) => {
     if (window.confirm("Are you sure you want to delete this note?")) {
       setNotes((prev) => prev.filter((n) => n.id !== id));
+      
+      // Trigger auto-save after deleting note
+      triggerAutoSave();
     }
   };
 
@@ -249,6 +320,9 @@ const App: React.FC = () => {
     if (notes.length === 0) return;
     if (window.confirm("Clear all notes?")) {
       setNotes([]);
+      
+      // Trigger auto-save after clearing notes
+      triggerAutoSave();
     }
   };
 
@@ -631,6 +705,30 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-2 text-sm text-slate-400">
+             {/* Auto-save status indicator (only in workspace mode) */}
+             {workspace && workspace.rootDir && (
+               <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                 {autoSaveStatus === 'saving' && (
+                   <>
+                     <Loader2 size={14} className="animate-spin text-blue-400" />
+                     <span className="text-xs text-slate-400">Saving...</span>
+                   </>
+                 )}
+                 {autoSaveStatus === 'saved' && (
+                   <>
+                     <Check size={14} className="text-emerald-400" />
+                     <span className="text-xs text-emerald-400">Saved</span>
+                   </>
+                 )}
+                 {autoSaveStatus === 'idle' && (
+                   <>
+                     <Cloud size={14} className="text-slate-500" />
+                     <span className="text-xs text-slate-500">Auto-save on</span>
+                   </>
+                 )}
+               </div>
+             )}
+             
              {/* Workspace Management Buttons */}
              <button
                 onClick={handleOpenWorkspace}
@@ -824,8 +922,18 @@ const App: React.FC = () => {
           </div>
         </div>
 
-            {/* Bottom Section: Notes Feed */}
+            {/* Bottom Section: Summary and Notes */}
             <div className="w-full">
+            {/* Summary Panel */}
+            {subtitleState.segments.length > 0 && (
+              <SummaryPanel
+                subtitleSegments={subtitleState.segments}
+                onSeek={handleSeek}
+                onGenerateSummary={handleGenerateSummary}
+              />
+            )}
+
+            {/* Generated Notes Section */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 pb-2 border-b border-slate-800 gap-4">
                 <h2 className="text-xl font-bold text-white flex items-center gap-3">
                     <BookOpen className="text-blue-500" size={24} />
