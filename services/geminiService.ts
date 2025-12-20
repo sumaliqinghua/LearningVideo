@@ -111,3 +111,44 @@ export const analyzeText = async (subtitleText: string, userPrompt: string): Pro
     return "Error generating notes from text. Please check your API key and network.";
   }
 };
+
+/**
+ * Answers a user question based on context from subtitle text.
+ * @param contextText The subtitle text around the current timestamp
+ * @param question The user's question
+ */
+export const askQuestion = async (contextText: string, question: string): Promise<string> => {
+  try {
+    const ai = getClient();
+    
+    const systemPrompt = `你是一个视频教程助手。用户正在观看一个教程视频，并根据当前播放位置前后的内容向你提问。
+请根据提供的字幕上下文来回答用户的问题。如果上下文中没有相关信息，请诚实地说明。
+回答应该简洁、准确、有帮助。使用 Markdown 格式。`;
+
+    const userMessage = `**视频字幕上下文（当前时间点前后2分钟）:**
+${contextText}
+
+**用户问题:**
+${question}`;
+
+    const response = await ai.chat.completions.create({
+      model: TEXT_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: userMessage
+        }
+      ],
+      temperature: 0.5
+    });
+
+    return response.choices[0]?.message?.content || "无法生成回答。";
+  } catch (error) {
+    console.error("Qiniu API Error:", error);
+    return "生成回答时出错，请检查 API 配置和网络连接。";
+  }
+};

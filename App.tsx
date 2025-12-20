@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { VideoPlayer } from './components/VideoPlayer';
 import { NoteCard } from './components/NoteCard';
 import { SubtitlePanel } from './components/SubtitlePanel';
-import { Note, VideoState, SubtitleState, SummarySegment } from './types';
-import { analyzeAudio, analyzeText } from './services/geminiService';
+import { QAPanel } from './components/QAPanel';
+import { Note, VideoState, SubtitleState, SummarySegment, QAMessage } from './types';
+import { analyzeAudio, analyzeText, askQuestion } from './services/geminiService';
 import { getCachedModels } from './services/transcribe';
 import { saveProjectToFolder, saveProjectAsZip, loadProjectFromFolder } from './services/projectService';
 import { openWorkspace } from './services/workspaceService';
@@ -12,7 +13,7 @@ import { ProjectSidebar } from './components/ProjectSidebar';
 import { SummaryPanel } from './components/SummaryPanel';
 import { Workspace, ProjectItem } from './types';
 import { decodeAudioFromFile, sliceAudioBuffer, audioBufferToWav, blobToBase64 } from './utils/audioUtils';
-import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2, FolderOpen, Save, Check, Cloud } from 'lucide-react';
+import { Sparkles, FileVideo, BookOpen, Trash2, Mic, Settings, XCircle, Download, FileText, FileDown, Loader2, FolderOpen, Save, Check, Cloud, MessageCircle } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
 
@@ -76,6 +77,9 @@ const App: React.FC = () => {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [summarySegments, setSummarySegments] = useState<SummarySegment[]>([]);
+  const [qaMessages, setQaMessages] = useState<QAMessage[]>([]);
+  const [isAskingQuestion, setIsAskingQuestion] = useState(false);
+  const [rightPanelTab, setRightPanelTab] = useState<'subtitle' | 'qa'>('subtitle');
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const fullAudioBufferRef = useRef<AudioBuffer | null>(null);
@@ -296,6 +300,70 @@ const App: React.FC = () => {
     setSummarySegments(segments);
     // Trigger auto-save after generating summary
     triggerAutoSave();
+  };
+
+  const handleAskQuestion = async (question: string) => {
+    if (subtitleState.segments.length === 0) {
+      alert('请先加载字幕才能使用问答功能');
+      return;
+    }
+
+    const timestamp = videoState.currentTime;
+    const newMessageId = Date.now().toString();
+
+    // Create placeholder message
+    const newMessage: QAMessage = {
+      id: newMessageId,
+      question,
+      answer: '',
+      timestamp,
+      isLoading: true,
+    };
+
+    setQaMessages(prev => [...prev, newMessage]);
+    setIsAskingQuestion(true);
+
+    try {
+      // Get context: 2 minutes before + 2 minutes after current time
+      const startTime = Math.max(0, timestamp - 120);
+      const endTime = timestamp + 120;
+
+      const relevantSegments = subtitleState.segments.filter(
+        seg => seg.start >= startTime && seg.start <= endTime
+      );
+
+      const contextText = relevantSegments.length > 0
+        ? relevantSegments.map(seg => seg.text).join(' ')
+        : '（当前时间点附近没有字幕内容）';
+
+      const answer = await askQuestion(contextText, question);
+
+      setQaMessages(prev =>
+        prev.map(msg =>
+          msg.id === newMessageId
+            ? { ...msg, answer, isLoading: false }
+            : msg
+        )
+      );
+    } catch (error) {
+      console.error('Failed to get answer:', error);
+      setQaMessages(prev =>
+        prev.map(msg =>
+          msg.id === newMessageId
+            ? { ...msg, answer: '获取回答时出错，请重试。', isLoading: false }
+            : msg
+        )
+      );
+    } finally {
+      setIsAskingQuestion(false);
+    }
+  };
+
+  const handleClearQAMessages = () => {
+    if (qaMessages.length === 0) return;
+    if (window.confirm('确定要清空所有问答记录吗？')) {
+      setQaMessages([]);
+    }
   };
 
   const handleUpdateContent = (id: string, newContent: string) => {
@@ -800,16 +868,65 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Right Sidebar: Subtitle Panel */}
+              {/* Right Sidebar: Subtitle/QA Panel with Tabs */}
               <div className="lg:col-span-1 flex flex-col min-h-[400px] h-[600px]">
-                <SubtitlePanel
-                  currentTime={videoState.currentTime}
-                  subtitleState={subtitleState}
-                  setSubtitleState={setSubtitleState}
-                  onSeek={handleSeek}
-                  videoFile={videoState.file}
-                  onLoadSubtitle={handleLoadSubtitle}
-                />
+                {/* Tab Header */}
+                <div className="flex items-center bg-slate-900 rounded-t-xl border border-b-0 border-slate-800">
+                  <button
+                    onClick={() => setRightPanelTab('subtitle')}
+                    className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors rounded-tl-xl ${
+                      rightPanelTab === 'subtitle'
+                        ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-500'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    <FileText size={14} />
+                    字幕
+                  </button>
+                  <button
+                    onClick={() => setRightPanelTab('qa')}
+                    className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors rounded-tr-xl ${
+                      rightPanelTab === 'qa'
+                        ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-500'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    <MessageCircle size={14} />
+                    问答
+                    {qaMessages.length > 0 && (
+                      <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full">
+                        {qaMessages.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+                
+                {/* Tab Content */}
+                <div className="flex-1 overflow-hidden">
+                  {rightPanelTab === 'subtitle' ? (
+                    <div className="h-full [&>div]:rounded-t-none [&>div]:border-t-0">
+                      <SubtitlePanel
+                        currentTime={videoState.currentTime}
+                        subtitleState={subtitleState}
+                        setSubtitleState={setSubtitleState}
+                        onSeek={handleSeek}
+                        videoFile={videoState.file}
+                        onLoadSubtitle={handleLoadSubtitle}
+                      />
+                    </div>
+                  ) : (
+                    <div className="h-full [&>div]:rounded-t-none [&>div]:border-t-0">
+                      <QAPanel
+                        messages={qaMessages}
+                        isAsking={isAskingQuestion}
+                        onAsk={handleAskQuestion}
+                        onClearMessages={handleClearQAMessages}
+                        onSeek={handleSeek}
+                        hasSubtitles={subtitleState.segments.length > 0}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

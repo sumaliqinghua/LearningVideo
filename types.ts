@@ -59,6 +59,19 @@ export interface Workspace {
   currentProjectId: string | null;
 }
 
+export interface QAMessage {
+  id: string;
+  question: string;
+  answer: string;
+  timestamp: number; // Video timestamp when question was asked
+  isLoading: boolean;
+}
+
+export interface QAState {
+  messages: QAMessage[];
+  isAsking: boolean;
+}
+
 export enum ToastType {
   SUCCESS = 'success',
   ERROR = 'error',
