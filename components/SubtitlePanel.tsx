@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { Upload, Loader2, FileText, Download } from 'lucide-react';
 import { SubtitleState } from '../types';
 import { transcribeFile } from '../services/transcribe';
+import { audioBufferToWav, resampleToMono, sliceAudioBuffer } from '../utils/audioUtils';
 
 interface SubtitlePanelProps {
   currentTime: number;
@@ -10,6 +11,8 @@ interface SubtitlePanelProps {
   onSeek: (time: number) => void;
   videoFile: File | null;
   onLoadSubtitle: (vttUrl: string) => void;
+  getAudioBuffer?: () => AudioBuffer | null;
+  isAudioReady?: boolean;
 }
 
 export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
@@ -19,6 +22,8 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
   onSeek,
   videoFile,
   onLoadSubtitle,
+  getAudioBuffer,
+  isAudioReady,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,6 +84,12 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
       return;
     }
 
+    // Prefer chunked transcription based on already-decoded audio buffer.
+    // This avoids uploading huge video files and reduces the chance of failure on long videos.
+    const audioBuffer = getAudioBuffer?.() ?? null;
+    const shouldChunk = !!audioBuffer;
+
+
     setSubtitleState((prev) => ({
       ...prev,
       isRecognizing: true,
@@ -86,27 +97,96 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
     }));
 
     try {
-      // Update progress message
-      setSubtitleState((prev) => ({
-        ...prev,
-        recognitionProgress: 'Processing audio... This may take a few minutes.',
-      }));
+      const model = subtitleState.recognitionModel || undefined;
 
-      console.log('Starting transcription with model:', subtitleState.recognitionModel);
-      const result = await transcribeFile(videoFile, subtitleState.recognitionModel || undefined);
+      if (!shouldChunk) {
+        // Fallback: upload original file directly.
+        // This will work even if the browser failed to decode audio locally.
+        setSubtitleState((prev) => ({
+          ...prev,
+          recognitionProgress: isAudioReady === false
+            ? 'Audio decode failed or is not ready. Uploading full file for transcription...'
+            : 'Uploading full file for transcription...',
+        }));
 
-      console.log('Transcription result:', result);
+        console.log('Starting transcription with model:', subtitleState.recognitionModel);
+        const result = await transcribeFile(videoFile, model);
 
-      const segments = result.segments.map((seg) => ({
-        id: seg.id,
-        start: seg.start,
-        end: seg.end,
-        text: seg.text,
-      }));
+        const segments = result.segments.map((seg) => ({
+          id: seg.id,
+          start: seg.start,
+          end: seg.end,
+          text: seg.text,
+        }));
 
-      console.log('Parsed segments:', segments.length);
+        if (segments.length === 0) {
+          setSubtitleState((prev) => ({
+            ...prev,
+            isRecognizing: false,
+            recognitionProgress: '',
+          }));
+          alert('No speech detected in the video. Please make sure the video contains spoken content, not just background music or silence.');
+          return;
+        }
 
-      if (segments.length === 0) {
+        const vttBlob = new Blob([result.vtt], { type: 'text/vtt' });
+        const vttUrl = URL.createObjectURL(vttBlob);
+
+        setSubtitleState((prev) => ({
+          ...prev,
+          segments,
+          isRecognizing: false,
+          recognitionProgress: '',
+          vttUrl,
+        }));
+        onLoadSubtitle(vttUrl);
+        return;
+      }
+
+      const CHUNK_SECONDS = 10 * 60;
+      const TARGET_SAMPLE_RATE = 16000;
+
+      const totalDuration = audioBuffer.duration;
+      const chunkCount = Math.max(1, Math.ceil(totalDuration / CHUNK_SECONDS));
+
+      let nextId = 0;
+      const merged: Array<{ id: number; start: number; end: number; text: string }> = [];
+
+      for (let i = 0; i < chunkCount; i++) {
+        const chunkStart = i * CHUNK_SECONDS;
+        const chunkEnd = Math.min(totalDuration, (i + 1) * CHUNK_SECONDS);
+        const chunkDuration = chunkEnd - chunkStart;
+
+        setSubtitleState((prev) => ({
+          ...prev,
+          recognitionProgress: `Transcribing ${i + 1}/${chunkCount} (${formatTime(chunkStart)} - ${formatTime(chunkEnd)})...`,
+        }));
+
+        // Slice -> resample to mono 16k -> encode WAV
+        const slice = sliceAudioBuffer(audioBuffer, chunkEnd, chunkDuration);
+        const mono16k = await resampleToMono(slice, TARGET_SAMPLE_RATE);
+        const wavBlob = audioBufferToWav(mono16k);
+        const wavFile = new File(
+          [wavBlob],
+          `chunk_${i + 1}.wav`,
+          { type: 'audio/wav' }
+        );
+
+        const result = await transcribeFile(wavFile, model);
+
+        for (const seg of result.segments) {
+          merged.push({
+            id: nextId++,
+            start: seg.start + chunkStart,
+            end: seg.end + chunkStart,
+            text: seg.text,
+          });
+        }
+      }
+
+      merged.sort((a, b) => a.start - b.start);
+
+      if (merged.length === 0) {
         setSubtitleState((prev) => ({
           ...prev,
           isRecognizing: false,
@@ -116,18 +196,17 @@ export const SubtitlePanel: React.FC<SubtitlePanelProps> = ({
         return;
       }
 
-      // Convert to VTT for video element
-      const vttBlob = new Blob([result.vtt], { type: 'text/vtt' });
+      const vttContent = convertToVTT(merged);
+      const vttBlob = new Blob([vttContent], { type: 'text/vtt' });
       const vttUrl = URL.createObjectURL(vttBlob);
 
       setSubtitleState((prev) => ({
         ...prev,
-        segments,
+        segments: merged,
         isRecognizing: false,
         recognitionProgress: '',
         vttUrl,
       }));
-      console.log('Recognition completed, calling onLoadSubtitle with:', vttUrl);
       onLoadSubtitle(vttUrl);
     } catch (error) {
       console.error('Failed to recognize subtitle:', error);
